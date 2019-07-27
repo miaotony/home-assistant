@@ -1,4 +1,5 @@
 """Test cors for the HTTP component."""
+from pathlib import Path
 from unittest.mock import patch
 
 from aiohttp import web
@@ -7,11 +8,14 @@ from aiohttp.hdrs import (
     ACCESS_CONTROL_ALLOW_HEADERS,
     ACCESS_CONTROL_REQUEST_HEADERS,
     ACCESS_CONTROL_REQUEST_METHOD,
+    AUTHORIZATION,
     ORIGIN
 )
 import pytest
 
-from homeassistant.const import HTTP_HEADER_HA_AUTH
+from homeassistant.const import (
+    HTTP_HEADER_HA_AUTH
+)
 from homeassistant.setup import async_setup_component
 from homeassistant.components.http.cors import setup_cors
 from homeassistant.components.http.view import HomeAssistantView
@@ -84,6 +88,15 @@ async def test_cors_requests(client):
     assert req.headers[ACCESS_CONTROL_ALLOW_ORIGIN] == \
         TRUSTED_ORIGIN
 
+    # With auth token in headers
+    req = await client.get('/', headers={
+        AUTHORIZATION: 'Bearer some-token',
+        ORIGIN: TRUSTED_ORIGIN
+    })
+    assert req.status == 200
+    assert req.headers[ACCESS_CONTROL_ALLOW_ORIGIN] == \
+        TRUSTED_ORIGIN
+
 
 async def test_cors_preflight_allowed(client):
     """Test cross origin resource sharing preflight (OPTIONS) request."""
@@ -128,3 +141,34 @@ async def test_cors_middleware_with_cors_allowed_view(hass):
 
     hass.http.app._on_startup.freeze()
     await hass.http.app.startup()
+
+
+async def test_cors_works_with_frontend(hass, hass_client):
+    """Test CORS works with the frontend."""
+    assert await async_setup_component(hass, 'frontend', {
+        'http': {
+            'cors_allowed_origins': ['http://home-assistant.io']
+        }
+    })
+    client = await hass_client()
+    resp = await client.get('/')
+    assert resp.status == 200
+
+
+async def test_cors_on_static_files(hass, hass_client):
+    """Test that we enable CORS for static files."""
+    assert await async_setup_component(hass, 'frontend', {
+        'http': {
+            'cors_allowed_origins': ['http://www.example.com']
+        }
+    })
+    hass.http.register_static_path('/something', str(Path(__file__).parent))
+
+    client = await hass_client()
+    resp = await client.options('/something/__init__.py', headers={
+        'origin': 'http://www.example.com',
+        ACCESS_CONTROL_REQUEST_METHOD: 'GET',
+    })
+    assert resp.status == 200
+    assert resp.headers[ACCESS_CONTROL_ALLOW_ORIGIN] == \
+        'http://www.example.com'

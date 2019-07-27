@@ -1,9 +1,4 @@
-"""
-Support for Wink hubs.
-
-For more details about this component, please refer to the documentation at
-https://home-assistant.io/components/wink/
-"""
+"""Support for Wink hubs."""
 from datetime import timedelta
 import json
 import logging
@@ -14,18 +9,17 @@ import voluptuous as vol
 
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.const import (
-    ATTR_BATTERY_LEVEL, ATTR_ENTITY_ID, ATTR_NAME, CONF_EMAIL, CONF_PASSWORD,
+    ATTR_BATTERY_LEVEL, ATTR_NAME, CONF_EMAIL, CONF_PASSWORD,
     EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP, STATE_OFF, STATE_ON,
     __version__)
 from homeassistant.core import callback
 from homeassistant.helpers import discovery
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.config_validation import ENTITY_SERVICE_SCHEMA
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.event import track_time_interval
 from homeassistant.util.json import load_json, save_json
-
-REQUIREMENTS = ['python-wink==1.10.1', 'pubnubsub-handler==1.0.2']
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,7 +50,7 @@ USER_AGENT = "Manufacturer/Home-Assistant{} python/3 Wink/3".format(
 
 DEFAULT_CONFIG = {
     'client_id': 'CLIENT_ID_HERE',
-    'client_secret': 'CLIENT_SECRET_HERE'
+    'client_secret': 'CLIENT_SECRET_HERE',
 }
 
 SERVICE_ADD_NEW_DEVICES = 'pull_newly_added_devices_from_wink'
@@ -113,66 +107,55 @@ CONFIG_SCHEMA = vol.Schema({
     })
 }, extra=vol.ALLOW_EXTRA)
 
-RENAME_DEVICE_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_NAME): cv.string
+RENAME_DEVICE_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_NAME): cv.string,
 }, extra=vol.ALLOW_EXTRA)
 
-DELETE_DEVICE_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.entity_ids
-}, extra=vol.ALLOW_EXTRA)
+DELETE_DEVICE_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({}, extra=vol.ALLOW_EXTRA)
 
 SET_PAIRING_MODE_SCHEMA = vol.Schema({
     vol.Required(ATTR_HUB_NAME): cv.string,
     vol.Required(ATTR_PAIRING_MODE): cv.string,
-    vol.Optional(ATTR_KIDDE_RADIO_CODE): cv.string
+    vol.Optional(ATTR_KIDDE_RADIO_CODE): cv.string,
 }, extra=vol.ALLOW_EXTRA)
 
-SET_VOLUME_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_VOLUME): vol.In(VOLUMES)
+SET_VOLUME_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_VOLUME): vol.In(VOLUMES),
 })
 
-SET_SIREN_TONE_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_TONE): vol.In(TONES)
+SET_SIREN_TONE_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_TONE): vol.In(TONES),
 })
 
-SET_CHIME_MODE_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_TONE): vol.In(CHIME_TONES)
+SET_CHIME_MODE_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_TONE): vol.In(CHIME_TONES),
 })
 
-SET_AUTO_SHUTOFF_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_AUTO_SHUTOFF): vol.In(AUTO_SHUTOFF_TIMES)
+SET_AUTO_SHUTOFF_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_AUTO_SHUTOFF): vol.In(AUTO_SHUTOFF_TIMES),
 })
 
-SET_STROBE_ENABLED_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
+SET_STROBE_ENABLED_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
+    vol.Required(ATTR_ENABLED): cv.boolean,
+})
+
+ENABLED_SIREN_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
     vol.Required(ATTR_ENABLED): cv.boolean
 })
 
-ENABLED_SIREN_SCHEMA = vol.Schema({
-    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
-    vol.Required(ATTR_ENABLED): cv.boolean
-})
-
-DIAL_CONFIG_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+DIAL_CONFIG_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
     vol.Optional(ATTR_MIN_VALUE): vol.Coerce(int),
     vol.Optional(ATTR_MAX_VALUE): vol.Coerce(int),
     vol.Optional(ATTR_MIN_POSITION): cv.positive_int,
     vol.Optional(ATTR_MAX_POSITION): cv.positive_int,
     vol.Optional(ATTR_ROTATION): vol.In(ROTATIONS),
     vol.Optional(ATTR_SCALE): vol.In(SCALES),
-    vol.Optional(ATTR_TICKS): cv.positive_int
+    vol.Optional(ATTR_TICKS): cv.positive_int,
 })
 
-DIAL_STATE_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+DIAL_STATE_SCHEMA = ENTITY_SERVICE_SCHEMA.extend({
     vol.Required(ATTR_VALUE): vol.Coerce(int),
-    vol.Optional(ATTR_LABELS): cv.ensure_list(cv.string)
+    vol.Optional(ATTR_LABELS): cv.ensure_list(cv.string),
 })
 
 WINK_COMPONENTS = [
@@ -336,8 +319,10 @@ def setup(hass, config):
             return True
 
     pywink.set_user_agent(USER_AGENT)
+    sub_details = pywink.get_subscription_details()
     hass.data[DOMAIN]['pubnub'] = PubNubSubscriptionHandler(
-        pywink.get_subscription_key())
+        sub_details[0],
+        origin=sub_details[1])
 
     def _subscribe():
         hass.data[DOMAIN]['pubnub'].subscribe()
@@ -358,7 +343,9 @@ def setup(hass, config):
         time.sleep(1)
         pywink.set_user_agent(USER_AGENT)
         _temp_response = pywink.wink_api_fetch()
-        _LOGGER.debug(str(json.dumps(_temp_response)))
+        _LOGGER.debug("%s", _temp_response)
+        _temp_response = pywink.post_session()
+        _LOGGER.debug("%s", _temp_response)
 
     # Call the Wink API every hour to keep PubNub updates flowing
     track_time_interval(hass, keep_alive_call, timedelta(minutes=60))
@@ -686,6 +673,15 @@ class WinkDevice(Entity):
     def name(self):
         """Return the name of the device."""
         return self.wink.name()
+
+    @property
+    def unique_id(self):
+        """Return the unique id of the Wink device."""
+        if hasattr(self.wink, 'capability') and \
+                self.wink.capability() is not None:
+            return "{}_{}".format(self.wink.object_id(),
+                                  self.wink.capability())
+        return self.wink.object_id()
 
     @property
     def available(self):

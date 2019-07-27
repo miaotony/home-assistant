@@ -1,11 +1,10 @@
 """Helpers for data entry flows for config entries."""
 from functools import partial
-from ipaddress import ip_address
-from urllib.parse import urlparse
 
 from homeassistant import config_entries
-from homeassistant.util.network import is_local
 
+
+# mypy: allow-incomplete-defs, allow-untyped-defs
 
 def register_discovery_flow(domain, title, discovery_function,
                             connection_class):
@@ -84,6 +83,10 @@ class DiscoveryFlowHandler(config_entries.ConfigFlow):
 
         return await self.async_step_confirm()
 
+    async_step_zeroconf = async_step_discovery
+    async_step_ssdp = async_step_discovery
+    async_step_homekit = async_step_discovery
+
     async def async_step_import(self, _):
         """Handle a flow initialized by import."""
         if self._async_in_progress() or self._async_current_entries():
@@ -115,30 +118,41 @@ class WebhookFlowHandler(config_entries.ConfigFlow):
         if not self._allow_multiple and self._async_current_entries():
             return self.async_abort(reason='one_instance_allowed')
 
-        try:
-            url_parts = urlparse(self.hass.config.api.base_url)
-
-            if is_local(ip_address(url_parts.hostname)):
-                return self.async_abort(reason='not_internet_accessible')
-        except ValueError:
-            # If it's not an IP address, it's very likely publicly accessible
-            pass
-
         if user_input is None:
             return self.async_show_form(
                 step_id='user',
             )
 
         webhook_id = self.hass.components.webhook.async_generate_id()
-        webhook_url = \
-            self.hass.components.webhook.async_generate_url(webhook_id)
+
+        if self.hass.components.cloud.async_active_subscription():
+            webhook_url = \
+                await self.hass.components.cloud.async_create_cloudhook(
+                    webhook_id
+                )
+            cloudhook = True
+        else:
+            webhook_url = \
+                self.hass.components.webhook.async_generate_url(webhook_id)
+            cloudhook = False
 
         self._description_placeholder['webhook_url'] = webhook_url
 
         return self.async_create_entry(
             title=self._title,
             data={
-                'webhook_id': webhook_id
+                'webhook_id': webhook_id,
+                'cloudhook': cloudhook,
             },
             description_placeholders=self._description_placeholder
         )
+
+
+async def webhook_async_remove_entry(hass, entry) -> None:
+    """Remove a webhook config entry."""
+    if (not entry.data.get('cloudhook') or
+            'cloud' not in hass.config.components):
+        return
+
+    await hass.components.cloud.async_delete_cloudhook(
+        entry.data['webhook_id'])

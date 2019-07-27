@@ -1,16 +1,16 @@
-"""
-Offer state listening automation rules.
+"""Offer state listening automation rules."""
+import logging
 
-For more details about this automation rule, please refer to the documentation
-at https://home-assistant.io/docs/automation/trigger/#state-trigger
-"""
 import voluptuous as vol
 
+from homeassistant import exceptions
 from homeassistant.core import callback
 from homeassistant.const import MATCH_ALL, CONF_PLATFORM, CONF_FOR
+from homeassistant.helpers import config_validation as cv, template
 from homeassistant.helpers.event import (
     async_track_state_change, async_track_same_state)
-import homeassistant.helpers.config_validation as cv
+
+_LOGGER = logging.getLogger(__name__)
 
 CONF_ENTITY_ID = 'entity_id'
 CONF_FROM = 'from'
@@ -22,18 +22,22 @@ TRIGGER_SCHEMA = vol.All(vol.Schema({
     # These are str on purpose. Want to catch YAML conversions
     vol.Optional(CONF_FROM): str,
     vol.Optional(CONF_TO): str,
-    vol.Optional(CONF_FOR): vol.All(cv.time_period, cv.positive_timedelta),
+    vol.Optional(CONF_FOR): vol.Any(
+        vol.All(cv.time_period, cv.positive_timedelta),
+        cv.template, cv.template_complex),
 }), cv.key_dependency(CONF_FOR, CONF_TO))
 
 
-async def async_trigger(hass, config, action):
+async def async_trigger(hass, config, action, automation_info):
     """Listen for state changes based on configuration."""
     entity_id = config.get(CONF_ENTITY_ID)
     from_state = config.get(CONF_FROM, MATCH_ALL)
     to_state = config.get(CONF_TO, MATCH_ALL)
     time_delta = config.get(CONF_FOR)
+    template.attach(hass, time_delta)
     match_all = (from_state == MATCH_ALL and to_state == MATCH_ALL)
     unsub_track_same = {}
+    period = {}
 
     @callback
     def state_automation_listener(entity, from_s, to_s):
@@ -47,7 +51,7 @@ async def async_trigger(hass, config, action):
                     'entity_id': entity,
                     'from_state': from_s,
                     'to_state': to_s,
-                    'for': time_delta,
+                    'for': time_delta if not time_delta else period[entity]
                 }
             }, context=to_s.context))
 
@@ -60,10 +64,40 @@ async def async_trigger(hass, config, action):
             call_action()
             return
 
+        variables = {
+            'trigger': {
+                'platform': 'state',
+                'entity_id': entity,
+                'from_state': from_s,
+                'to_state': to_s,
+            }
+        }
+
+        try:
+            if isinstance(time_delta, template.Template):
+                period[entity] = vol.All(
+                    cv.time_period,
+                    cv.positive_timedelta)(
+                        time_delta.async_render(variables))
+            elif isinstance(time_delta, dict):
+                time_delta_data = {}
+                time_delta_data.update(
+                    template.render_complex(time_delta, variables))
+                period[entity] = vol.All(
+                    cv.time_period,
+                    cv.positive_timedelta)(
+                        time_delta_data)
+            else:
+                period[entity] = time_delta
+        except (exceptions.TemplateError, vol.Invalid) as ex:
+            _LOGGER.error("Error rendering '%s' for template: %s",
+                          automation_info['name'], ex)
+            return
+
         unsub_track_same[entity] = async_track_same_state(
-            hass, time_delta, call_action,
+            hass, period[entity], call_action,
             lambda _, _2, to_state: to_state.state == to_s.state,
-            entity_ids=entity_id)
+            entity_ids=entity)
 
     unsub = async_track_state_change(
         hass, entity_id, state_automation_listener, from_state, to_state)
